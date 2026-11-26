@@ -106,6 +106,7 @@ Examples:
     hermes auth remove <p> <t>    Remove pooled credential by index, id, or label
     hermes auth reset <p> [t]     Clear exhaustion status for a provider, or one credential
     hermes auth priority <p> <t> <n>  Move a pooled credential to priority n (0 = tried first)
+    hermes auth limit <p> <t> <pct|off>  Cap one account's usage (percent of its longest quota window)
     hermes auth refresh <p> [t]   Refresh a pooled OAuth credential and clear its cooldown
     hermes model                  Select default model
     hermes fallback [list]        Show fallback provider chain

@@ -229,7 +229,17 @@ Only `openai-codex` supports this setting. Thresholds must be finite numbers
 greater than 0 and at most 100. Rules for missing credential IDs are ignored
 with a warning.
 
-To disable a rule without removing or reauthorizing the credential:
+The limit is per account. An account with no limit keeps the legacy behavior: it is used until
+the provider refuses it, and is never probed or filtered. Set or clear one from the CLI (the target is an
+index, id or label, as for `hermes auth priority`); `hermes auth list` shows `limit=75%` on limited
+accounts and nothing on the others:
+
+```bash
+hermes auth limit openai-codex work-seat 75
+hermes auth limit openai-codex work-seat off
+```
+
+To disable a rule without removing or reauthorizing the credential, use `off` above or:
 
 ```bash
 hermes config unset credential_pool_usage_limits.openai-codex.abc123

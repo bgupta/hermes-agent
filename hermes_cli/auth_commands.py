@@ -16,9 +16,11 @@ from agent.credential_pool import (
     AUTH_TYPE_API_KEY, AUTH_TYPE_OAUTH, CUSTOM_POOL_PREFIX, SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE, STATUS_EXHAUSTED, STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN,
     STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, _codex_principal_identity,
-    _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
+    _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token,
+    list_custom_pool_providers,
     load_pool)
 from agent.credential_pool_admin import CredentialNotSavedError
+from agent.usage_admission.policy import USAGE_LIMIT_PROVIDERS, get_pool_usage_limits
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_cli.auth_plugin_providers import (
@@ -512,6 +514,55 @@ def auth_priority_command(args) -> None:
     _report_priority(provider, pool, moved, requested, "Set", "to")
 
 
+def auth_limit_command(args) -> None:
+    """`hermes auth limit <provider> <target> <percent|off>`: set or clear one account's usage ceiling.
+
+    Writes ``credential_pool_usage_limits.<provider>.<stable id>``. An account with no entry keeps the legacy
+    behavior (used until the provider refuses it; never probed or filtered)."""
+    import math
+    from hermes_cli.config import load_config, save_config
+    provider = _normalize_provider(getattr(args, "provider", ""))
+    if provider not in USAGE_LIMIT_PROVIDERS:
+        raise SystemExit(f"Usage limits are only supported for: {', '.join(sorted(USAGE_LIMIT_PROVIDERS))}. "
+                         f"Provider: {provider}.")
+    raw = str(getattr(args, "percent", "") or "").strip().lower()
+    remove = raw == "off"
+    percent = 0.0
+    if not remove:
+        try:
+            percent = float(raw.rstrip("%"))
+        except ValueError:
+            percent = math.nan
+        if not math.isfinite(percent) or not 0 < percent <= 100:
+            raise SystemExit(f'Invalid limit "{raw}": use a percent greater than 0 and at most 100, or "off".')
+    pool = load_pool(provider)
+    index, matched, error = pool.resolve_target(getattr(args, "target", None))
+    if matched is None or index is None:
+        raise SystemExit(f"{error} Provider: {provider}.")
+    cfg = load_config()
+    all_limits = cfg.get("credential_pool_usage_limits")
+    all_limits = dict(all_limits) if isinstance(all_limits, dict) else {}
+    provider_limits = all_limits.get(provider)
+    provider_limits = dict(provider_limits) if isinstance(provider_limits, dict) else {}
+    if remove:
+        had = provider_limits.pop(matched.id, None) is not None
+        message = (f'Cleared the usage limit for {provider} credential "{matched.label}" (id={matched.id}); '
+                   "it keeps the legacy behavior: used until the provider refuses it."
+                   if had else f'{provider} credential "{matched.label}" (id={matched.id}) had no usage limit.')
+    else:
+        provider_limits[matched.id] = int(percent) if percent.is_integer() else percent
+        message = (f'Set the usage limit for {provider} credential "{matched.label}" (id={matched.id}) to '
+                   f"{percent:g}%: it is excluded from new assignments once its longest quota window reaches that.")
+    if provider_limits:
+        all_limits[provider] = provider_limits
+    else:
+        all_limits.pop(provider, None)
+    cfg["credential_pool_usage_limits"] = all_limits
+    save_config(cfg)
+    print(message)
+    print("Restart long-running Hermes processes so they reload the setting.")
+
+
 def _free_tier_lines() -> tuple[str, str]:
     """The two-line free-tier rendering shared by every auth display surface (R-USR-1)."""
     from hermes_cli.anon_auth import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
@@ -547,13 +598,15 @@ def auth_list_command(args) -> None:
             print()
             continue
         print(f"{provider} ({len(entries)} credentials):")
+        usage_limits = get_pool_usage_limits(provider)
         for idx, entry in enumerate(entries, start=1):
             marker = "← " if current is not None and entry.id == current.id else "  "
             status = _format_exhausted_status(entry)
             source = _display_source(entry.source)
+            limit = f" limit={usage_limits[entry.id]:g}%" if entry.id in usage_limits else ""  # none = legacy
             row = (
                 f"  #{idx}  {entry.label:<20} {entry.auth_type:<7} "
-                f"id={entry.id} priority={entry.priority} {source}{status} {marker}"
+                f"id={entry.id} priority={entry.priority}{limit} {source}{status} {marker}"
             )
             print(row.rstrip())
         print()
@@ -918,7 +971,7 @@ def auth_upgrade_command(args) -> None:
 
 _AUTH_ACTIONS = {
     "add": auth_add_command, "list": auth_list_command, "remove": auth_remove_command,
-    "reset": auth_reset_command, "priority": auth_priority_command, "refresh": auth_refresh_command, "status": auth_status_command,
+    "reset": auth_reset_command, "priority": auth_priority_command, "limit": auth_limit_command, "refresh": auth_refresh_command, "status": auth_status_command,
     "logout": auth_logout_command, "upgrade": auth_upgrade_command}
 
 

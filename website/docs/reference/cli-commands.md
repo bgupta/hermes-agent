@@ -724,6 +724,8 @@ hermes auth add openai-codex --type oauth --priority 0   # Add an account and tr
 hermes auth add openai-codex --browser                   # Codex: browser auth-code + PKCE on localhost:1455 instead of device code
 hermes auth remove openrouter 2                          # Remove by index
 hermes auth priority openrouter backup-key 0             # Move a credential to the front of fill_first order
+hermes auth limit openai-codex work-seat 75             # Stop new assignments to this Codex account at 75% usage
+hermes auth limit openai-codex work-seat off            # Back to legacy: used until the provider refuses it
 hermes auth reset openrouter                             # Clear cooldowns
 hermes auth reset openrouter 2                           # Clear the cooldown on one credential
 hermes auth refresh openai-codex work                    # Refresh one OAuth credential and clear its cooldown

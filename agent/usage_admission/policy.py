@@ -19,9 +19,14 @@ _WARNED_INVALID_USAGE_LIMITS: set[tuple[str, str]] = set()
 _WARNED_UNMATCHED_USAGE_LIMITS: set[tuple[str, str]] = set()
 
 
+# Providers whose pooled accounts can carry a per-account usage ceiling (``hermes auth limit``).
+USAGE_LIMIT_PROVIDERS = frozenset({"openai-codex"})
+
+
 def get_pool_usage_limits(provider: str) -> dict[str, float]:
-    """Return configured soft usage ceilings keyed by credential ID."""
-    if provider != "openai-codex":
+    """Return configured soft usage ceilings keyed by credential ID. An account with no entry here keeps the
+    legacy behavior: it is used until the provider refuses it, and is never probed or filtered."""
+    if provider not in USAGE_LIMIT_PROVIDERS:
         return {}
     # credential_pool imports this package, so it is read at call time (and stays patchable there).
     from agent.credential_pool import _load_config_safe

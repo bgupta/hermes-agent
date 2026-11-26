@@ -1049,3 +1049,138 @@ def test_openrouter_loopback_callback_binds_nonce_path_and_rejects_forged_redire
     assert seen["forged_status"] == 404
     assert seen["genuine_status"] == 200
     assert code == "good-code"
+
+
+# ── hermes auth limit: per-account usage ceiling ──────────────────────────────
+
+
+def _limit_args(provider="openai-codex", target="codex-1", percent="75"):
+    return type("Args", (), {"provider": provider, "target": target, "percent": percent})()
+
+
+def _stored_limits(tmp_path):
+    cfg = yaml.safe_load((tmp_path / "hermes" / "config.yaml").read_text()) or {}
+    return cfg.get("credential_pool_usage_limits")
+
+
+def test_auth_limit_sets_and_clears_a_per_account_ceiling(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_pool_only_store())
+
+    from hermes_cli.auth_commands import auth_limit_command, auth_list_command
+
+    auth_limit_command(_limit_args(percent="75"))
+    assert _stored_limits(tmp_path) == {"openai-codex": {"codex-1": 75}}
+
+    capsys.readouterr()
+    auth_list_command(type("Args", (), {"provider": "openai-codex"})())
+    assert "limit=75%" in capsys.readouterr().out
+
+    auth_limit_command(_limit_args(percent="off"))
+    assert not _stored_limits(tmp_path)
+    capsys.readouterr()
+    auth_list_command(type("Args", (), {"provider": "openai-codex"})())
+    assert "limit=" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("target", ["1", "codex-1"])
+def test_auth_limit_target_resolves_by_index_or_id(tmp_path, monkeypatch, target):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_pool_only_store())
+
+    from hermes_cli.auth_commands import auth_limit_command
+
+    auth_limit_command(_limit_args(target=target, percent="80.5%"))
+    assert _stored_limits(tmp_path) == {"openai-codex": {"codex-1": 80.5}}
+
+
+def test_auth_limit_target_resolves_by_label(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    store = _codex_pool_only_store()
+    label = store["credential_pool"]["openai-codex"][0]["label"]
+    _write_auth_store(tmp_path, store)
+
+    from hermes_cli.auth_commands import auth_limit_command
+
+    auth_limit_command(_limit_args(target=label, percent="60"))
+    assert _stored_limits(tmp_path) == {"openai-codex": {"codex-1": 60}}
+
+
+def test_auth_limit_only_touches_the_named_account(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    store = _codex_pool_only_store()
+    second = dict(store["credential_pool"]["openai-codex"][0], id="codex-2", label="second", priority=1,
+                  access_token="other-token", refresh_token="other-refresh")
+    store["credential_pool"]["openai-codex"].append(second)
+    _write_auth_store(tmp_path, store)
+
+    from hermes_cli.auth_commands import auth_limit_command
+
+    auth_limit_command(_limit_args(target="codex-1", percent="70"))
+    auth_limit_command(_limit_args(target="codex-2", percent="90"))
+    auth_limit_command(_limit_args(target="codex-1", percent="off"))
+    assert _stored_limits(tmp_path) == {"openai-codex": {"codex-2": 90}}
+
+
+@pytest.mark.parametrize("percent", ["0", "-5", "101", "nan", "inf", "abc", ""])
+def test_auth_limit_rejects_invalid_percent_and_writes_nothing(tmp_path, monkeypatch, percent):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_pool_only_store())
+
+    from hermes_cli.auth_commands import auth_limit_command
+
+    with pytest.raises(SystemExit):
+        auth_limit_command(_limit_args(percent=percent))
+    assert not (tmp_path / "hermes" / "config.yaml").exists() or not _stored_limits(tmp_path)
+
+
+def test_auth_limit_rejects_unknown_target_and_unsupported_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_pool_only_store())
+
+    from hermes_cli.auth_commands import auth_limit_command
+
+    with pytest.raises(SystemExit):
+        auth_limit_command(_limit_args(target="nope"))
+    with pytest.raises(SystemExit):
+        auth_limit_command(_limit_args(provider="openrouter"))
+
+
+def test_auth_limit_is_wired_into_the_parser():
+    import argparse
+
+    from hermes_cli.auth_commands import _AUTH_ACTIONS, auth_limit_command
+    from hermes_cli.subcommands.auth import build_auth_parser
+
+    root = argparse.ArgumentParser()
+    build_auth_parser(root.add_subparsers(), cmd_auth=lambda args: None)
+    args = root.parse_args(["auth", "limit", "openai-codex", "work-seat", "75"])
+    assert (args.auth_action, args.provider, args.target, args.percent) == ("limit", "openai-codex", "work-seat", "75")
+    assert root.parse_args(["auth", "limit", "openai-codex", "1", "off"]).percent == "off"
+    assert _AUTH_ACTIONS["limit"] is auth_limit_command
+
+
+def test_account_without_a_limit_is_never_probed_or_filtered(tmp_path, monkeypatch):
+    """Legacy behavior: an account with no ceiling is used until the provider refuses it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_pool_only_store())
+
+    import agent.account_usage as account_usage
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth_commands import auth_limit_command
+
+    probes = []
+    monkeypatch.setattr(account_usage, "fetch_account_usage", lambda *a, **k: probes.append(k))
+
+    pool = load_pool("openai-codex")
+    assert pool.select().id == "codex-1"
+    assert pool.choose().id == "codex-1"
+    assert pool.peek().id == "codex-1"
+    assert probes == []
+
+    # Limiting then clearing returns to the same legacy behavior: no probe, no filtering.
+    auth_limit_command(_limit_args(percent="50"))
+    auth_limit_command(_limit_args(percent="off"))
+    pool = load_pool("openai-codex")
+    assert pool.select().id == "codex-1"
+    assert probes == []

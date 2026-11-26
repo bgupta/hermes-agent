@@ -1165,7 +1165,7 @@ def test_account_without_a_limit_is_never_probed_or_filtered(tmp_path, monkeypat
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, _codex_pool_only_store())
 
-    import agent.account_usage as account_usage
+    from agent import account_usage
     from agent.credential_pool import load_pool
     from hermes_cli.auth_commands import auth_limit_command
 
